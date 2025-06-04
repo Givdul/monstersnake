@@ -7,37 +7,39 @@ interface Position {
     y: number;
 }
 
+interface EnemyType {
+    color: string;
+    speed: number;
+}
+
 interface Enemy {
     position: Position;
     isStunned: boolean;
     lastCollisionTime: number;
+    type: EnemyType;
+    canAttack: boolean;
 }
 
 interface Player {
     position: Position;
-    isImmune: boolean;
-    lastHitTime: number;
 }
 
 export default function Home() {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const playerRef = useRef<Player>({
-        position: {x: 0, y: 0},
-        isImmune: false,
-        lastHitTime: 0
+        position: {x: 0, y: 0}
     });
-    const enemyRef = useRef<Enemy>({
-        position: {x: 0, y: 0},
-        isStunned: false,
-        lastCollisionTime: 0
-    });
+    const enemiesRef = useRef<Enemy[]>([]);
     const pointRef = useRef<Position>({x: 0, y: 0});
 
-    const boxSize = 20;
+    const boxSize = 50;
     const speed = 2;
-    const enemySpeed = 0.5;
-    const immunityDuration = 2000; // 2-second immunity
-    const stunDuration = 2000; // 2 seconds stun
+    const stunDuration = 2000;
+
+    const basicEnemy: EnemyType = {
+        color: "green",
+        speed: 0.5
+    };
 
     const [canvasSize, setCanvasSize] = useState({
         width: 0,
@@ -93,13 +95,13 @@ export default function Home() {
         const width = canvasRef.current.width;
         const height = canvasRef.current.height;
 
+        setPoints(0);
+
         playerRef.current = {
             position: {
                 x: Math.floor(width / 2),
                 y: Math.floor(height / 2)
-            },
-            isImmune: false,
-            lastHitTime: 0
+            }
         };
 
         const enemyStartPosition = getRandomSpawnPosition(
@@ -109,11 +111,13 @@ export default function Home() {
             playerRef.current.position.y
         );
 
-        enemyRef.current = {
+        enemiesRef.current = [{
             position: enemyStartPosition,
             isStunned: false,
-            lastCollisionTime: 0
-        };
+            lastCollisionTime: 0,
+            type: basicEnemy,
+            canAttack: true
+        }];
 
         pointRef.current = getRandomSpawnPosition(
             width,
@@ -137,16 +141,52 @@ export default function Home() {
                 Math.abs(pos1.y - pos2.y) < boxSize;
         };
 
+        const moveWithCollisionCheck = (enemy: Enemy, newX: number, newY: number) => {
+            const wouldCollide = enemiesRef.current.some(otherEnemy => {
+                if (otherEnemy === enemy) return false;
+
+                const dx = newX - otherEnemy.position.x;
+                const dy = newY - otherEnemy.position.y;
+                return Math.sqrt(dx * dx + dy * dy) < boxSize;
+            });
+
+            if (!wouldCollide) {
+                enemy.position.x = newX;
+                enemy.position.y = newY;
+            }
+        };
+
         const update = () => {
+            // Clear canvas once at the beginning
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
             if (healthRef.current <= 0) {
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.fillStyle = "green";
+                // Draw in the same order even in game over state
+                ctx.fillStyle = "yellow";
                 ctx.fillRect(
-                    enemyRef.current.position.x,
-                    enemyRef.current.position.y,
+                    pointRef.current.x,
+                    pointRef.current.y,
                     boxSize,
                     boxSize
                 );
+
+                ctx.fillStyle = "white";
+                ctx.fillRect(
+                    playerRef.current.position.x,
+                    playerRef.current.position.y,
+                    boxSize,
+                    boxSize
+                );
+
+                enemiesRef.current.forEach(enemy => {
+                    ctx.fillStyle = enemy.type.color;
+                    ctx.fillRect(
+                        enemy.position.x,
+                        enemy.position.y,
+                        boxSize,
+                        boxSize
+                    );
+                });
                 gameLoopRef.current = requestAnimationFrame(update);
                 return;
             }
@@ -162,63 +202,66 @@ export default function Home() {
             }
 
             const currentTime = Date.now();
-            if (playerRef.current.isImmune &&
-                currentTime - playerRef.current.lastHitTime >= immunityDuration) {
-                playerRef.current.isImmune = false;
-            }
 
-            if (enemyRef.current.isStunned) {
-                if (currentTime - enemyRef.current.lastCollisionTime >= stunDuration) {
-                    enemyRef.current.isStunned = false;
+            enemiesRef.current = enemiesRef.current.map(enemy => {
+                if (enemy.isStunned) {
+                    if (currentTime - enemy.lastCollisionTime >= stunDuration) {
+                        enemy.isStunned = false;
+                        enemy.canAttack = true;
+                    }
+                    return enemy;
                 }
-            } else {
-                const dx = playerRef.current.position.x - enemyRef.current.position.x;
-                const dy = playerRef.current.position.y - enemyRef.current.position.y;
+
+                const dx = playerRef.current.position.x - enemy.position.x;
+                const dy = playerRef.current.position.y - enemy.position.y;
                 const distance = Math.sqrt(dx * dx + dy * dy);
 
                 if (distance > 0) {
-                    enemyRef.current.position.x += (dx / distance) * enemySpeed;
-                    enemyRef.current.position.y += (dy / distance) * enemySpeed;
+                    const newX = enemy.position.x + (dx / distance) * enemy.type.speed;
+                    const newY = enemy.position.y + (dy / distance) * enemy.type.speed;
+                    moveWithCollisionCheck(enemy, newX, newY);
                 }
-            }
 
-            if (!enemyRef.current.isStunned &&
-                !playerRef.current.isImmune &&
-                checkCollision(playerRef.current.position, enemyRef.current.position)) {
-                setHealth(prev => {
-                    const newHealth = Math.max(0, prev - 1);
-                    return newHealth;
-                });
+                if (enemy.canAttack && !enemy.isStunned && checkCollision(playerRef.current.position, enemy.position)) {
+                    setHealth(prev => Math.max(0, prev - 1));
+                    enemy.isStunned = true;
+                    enemy.canAttack = false;
+                    enemy.lastCollisionTime = currentTime;
+                }
 
-                playerRef.current.isImmune = true;
-                playerRef.current.lastHitTime = currentTime;
-                enemyRef.current.isStunned = true;
-                enemyRef.current.lastCollisionTime = currentTime;
-            }
+                return enemy;
+            });
 
             if (checkCollision(playerRef.current.position, pointRef.current)) {
-                setPoints(prev => prev + 1);
-                pointRef.current = getRandomSpawnPosition(canvas.width, canvas.height, playerRef.current.position.x, playerRef.current.position.y);
+                const newPoints = points + 1;
+                setPoints(newPoints);
+
+                if (newPoints % 10 === 0) {
+                    const newEnemyPosition = getRandomSpawnPosition(
+                        canvas.width,
+                        canvas.height,
+                        playerRef.current.position.x,
+                        playerRef.current.position.y
+                    );
+                    enemiesRef.current = [...enemiesRef.current, {
+                        position: newEnemyPosition,
+                        isStunned: false,
+                        lastCollisionTime: 0,
+                        type: basicEnemy,
+                        canAttack: true
+                    }];
+                }
+
+                pointRef.current = getRandomSpawnPosition(
+                    canvas.width,
+                    canvas.height,
+                    playerRef.current.position.x,
+                    playerRef.current.position.y
+                );
             }
 
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            ctx.fillStyle = playerRef.current.isImmune ? "rgba(255, 255, 255, 0.5)" : "white";
-            ctx.fillRect(
-                playerRef.current.position.x,
-                playerRef.current.position.y,
-                boxSize,
-                boxSize
-            );
-
-            ctx.fillStyle = enemyRef.current.isStunned ? "rgba(0, 255, 0, 0.5)" : "green";
-            ctx.fillRect(
-                enemyRef.current.position.x,
-                enemyRef.current.position.y,
-                boxSize,
-                boxSize
-            );
-
+            // Draw everything in order
+            // 1. Point (bottom layer)
             ctx.fillStyle = "yellow";
             ctx.fillRect(
                 pointRef.current.x,
@@ -226,6 +269,26 @@ export default function Home() {
                 boxSize,
                 boxSize
             );
+
+            // 2. Player (middle layer)
+            ctx.fillStyle = "white";
+            ctx.fillRect(
+                playerRef.current.position.x,
+                playerRef.current.position.y,
+                boxSize,
+                boxSize
+            );
+
+            // 3. Enemies (top layer)
+            enemiesRef.current.forEach(enemy => {
+                ctx.fillStyle = enemy.isStunned ? `rgba(0, 255, 0, 0.5)` : enemy.type.color;
+                ctx.fillRect(
+                    enemy.position.x,
+                    enemy.position.y,
+                    boxSize,
+                    boxSize
+                );
+            });
 
             gameLoopRef.current = requestAnimationFrame(update);
         };
@@ -237,7 +300,7 @@ export default function Home() {
                 cancelAnimationFrame(gameLoopRef.current);
             }
         };
-    }, [canvasSize]);
+    }, [canvasSize, points]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
