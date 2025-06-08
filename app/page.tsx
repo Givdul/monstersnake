@@ -7,9 +7,26 @@ interface Position {
     y: number;
 }
 
+// Define possible enemy behaviors
+enum EnemyBehavior {
+    FOLLOW_PLAYER, // Basic enemy that follows player
+    RUSH_STRAIGHT, // Enemy that locks on and rushes in straight line
+    // Extend more behaviors here
+}
+
+enum RusherPhase {
+    STUNNED,
+    TARGETING,
+    RUSHING
+}
+
 interface EnemyType {
     color: string;
     speed: number;
+    behavior: EnemyBehavior;
+    rushDelay?: number;
+    targetingDuration?: number; // Time spent targeting before rush
+    // Extend more type-specific properties here
 }
 
 interface Enemy {
@@ -18,11 +35,31 @@ interface Enemy {
     lastCollisionTime: number;
     type: EnemyType;
     canAttack: boolean;
+    targetDirection?: {x: number, y: number};
+    rusherPhase?: RusherPhase;
+    phaseStartTime?: number;
+    // Extend more enemy-specific properties here
 }
 
 interface Player {
     position: Position;
 }
+
+// Define different enemy types
+const enemyTypes = {
+    basic: {
+        color: "green",
+        speed: 0.5,
+        behavior: EnemyBehavior.FOLLOW_PLAYER
+    },
+    rusher: {
+        color: "red",
+        speed: 4,
+        behavior: EnemyBehavior.RUSH_STRAIGHT,
+        rushDelay: 2000, // 2 seconds stun
+        targetingDuration: 3000 // 3 seconds targeting
+    }
+} as const;
 
 export default function Home() {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -36,11 +73,6 @@ export default function Home() {
     const speed = 2;
     const stunDuration = 2000;
 
-    const basicEnemy: EnemyType = {
-        color: "green",
-        speed: 0.5
-    };
-
     const [canvasSize, setCanvasSize] = useState({
         width: 0,
         height: 0
@@ -50,6 +82,12 @@ export default function Home() {
     const healthRef = useRef(4);
     const gameLoopRef = useRef<number>(0);
     const directionRef = useRef({dx: 0, dy: 0});
+
+    // Function to get random enemy type
+    const getRandomEnemyType = () => {
+        const types = Object.values(enemyTypes);
+        return types[Math.floor(Math.random() * types.length)];
+    };
 
     const getRandomSpawnPosition = (width: number, height: number, excludeX: number, excludeY: number) => {
         const minDistanceFromExcluded = Math.min(width, height) / 2;
@@ -111,13 +149,24 @@ export default function Home() {
             playerRef.current.position.y
         );
 
+        // Replace this part
         enemiesRef.current = [{
             position: enemyStartPosition,
             isStunned: false,
             lastCollisionTime: 0,
-            type: basicEnemy,
-            canAttack: true
+            type: {
+                ...getRandomEnemyType() // Create a new copy of the type
+            },
+            canAttack: true,
+            rusherPhase: undefined,
+            phaseStartTime: undefined
         }];
+
+        // Initialize phase for rusher
+        if (enemiesRef.current[0].type.behavior === EnemyBehavior.RUSH_STRAIGHT) {
+            enemiesRef.current[0].rusherPhase = RusherPhase.TARGETING;
+            enemiesRef.current[0].phaseStartTime = Date.now();
+        }
 
         pointRef.current = getRandomSpawnPosition(
             width,
@@ -141,27 +190,32 @@ export default function Home() {
                 Math.abs(pos1.y - pos2.y) < boxSize;
         };
 
-        const moveWithCollisionCheck = (enemy: Enemy, newX: number, newY: number) => {
-            const wouldCollide = enemiesRef.current.some(otherEnemy => {
-                if (otherEnemy === enemy) return false;
+        const moveWithCollisionCheck = (enemy: Enemy, newX: number, newY: number, checkEnemyCollisions: boolean = true) => {
+            // Only check enemy collisions if the flag is true, and it's not a rusher
+            if (checkEnemyCollisions && enemy.type.behavior !== EnemyBehavior.RUSH_STRAIGHT) {
+                const wouldCollide = enemiesRef.current.some(otherEnemy => {
+                    if (otherEnemy === enemy) return false;
 
-                const dx = newX - otherEnemy.position.x;
-                const dy = newY - otherEnemy.position.y;
-                return Math.sqrt(dx * dx + dy * dy) < boxSize;
-            });
+                    const dx = newX - otherEnemy.position.x;
+                    const dy = newY - otherEnemy.position.y;
+                    return Math.sqrt(dx * dx + dy * dy) < boxSize;
+                });
 
-            if (!wouldCollide) {
+                if (!wouldCollide) {
+                    enemy.position.x = newX;
+                    enemy.position.y = newY;
+                }
+            } else {
+                // For rushers or when not checking enemy collisions, move directly
                 enemy.position.x = newX;
                 enemy.position.y = newY;
             }
         };
 
         const update = () => {
-            // Clear canvas once at the beginning
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             if (healthRef.current <= 0) {
-                // Draw in the same order even in game over state
                 ctx.fillStyle = "yellow";
                 ctx.fillRect(
                     pointRef.current.x,
@@ -212,14 +266,108 @@ export default function Home() {
                     return enemy;
                 }
 
-                const dx = playerRef.current.position.x - enemy.position.x;
-                const dy = playerRef.current.position.y - enemy.position.y;
-                const distance = Math.sqrt(dx * dx + dy * dy);
+                switch (enemy.type.behavior) {
+                    case EnemyBehavior.FOLLOW_PLAYER:
+                        const dx = playerRef.current.position.x - enemy.position.x;
+                        const dy = playerRef.current.position.y - enemy.position.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
 
-                if (distance > 0) {
-                    const newX = enemy.position.x + (dx / distance) * enemy.type.speed;
-                    const newY = enemy.position.y + (dy / distance) * enemy.type.speed;
-                    moveWithCollisionCheck(enemy, newX, newY);
+                        if (distance > 0) {
+                            const newX = enemy.position.x + (dx / distance) * enemy.type.speed;
+                            const newY = enemy.position.y + (dy / distance) * enemy.type.speed;
+                            moveWithCollisionCheck(enemy, newX, newY);
+                        }
+                        break;
+
+                    case EnemyBehavior.RUSH_STRAIGHT:
+                        // Initialize rusher state if not set
+                        if (!enemy.rusherPhase) {
+                            enemy.rusherPhase = RusherPhase.TARGETING;
+                            enemy.phaseStartTime = currentTime;
+                        }
+
+                        // Handle collision with viewport boundaries
+                        const hitBoundary =
+                            enemy.position.x <= 0 ||
+                            enemy.position.x + boxSize >= canvas.width ||
+                            enemy.position.y <= 0 ||
+                            enemy.position.y + boxSize >= canvas.height;
+
+                        if (hitBoundary && enemy.rusherPhase === RusherPhase.RUSHING) {
+                            // Bounce back from the wall slightly
+                            if (enemy.position.x <= 0) {
+                                enemy.position.x = boxSize/2;
+                            } else if (enemy.position.x + boxSize >= canvas.width) {
+                                enemy.position.x = canvas.width - boxSize * 1.5;
+                            }
+                            if (enemy.position.y <= 0) {
+                                enemy.position.y = boxSize/2;
+                            } else if (enemy.position.y + boxSize >= canvas.height) {
+                                enemy.position.y = canvas.height - boxSize * 1.5;
+                            }
+
+                            enemy.rusherPhase = RusherPhase.STUNNED;
+                            enemy.phaseStartTime = currentTime;
+                            enemy.targetDirection = undefined;
+                            enemy.type = {
+                                ...enemy.type,
+                                color: "gray"
+                            };
+                        }
+
+                        // State machine for rusher phases
+                        switch (enemy.rusherPhase) {
+                            case RusherPhase.STUNNED:
+                                // Only check for stun duration
+                                if (typeof enemy.phaseStartTime === 'number' && currentTime - enemy.phaseStartTime >= enemy.type.rushDelay!) {
+                                    enemy.rusherPhase = RusherPhase.TARGETING;
+                                    enemy.phaseStartTime = currentTime;
+                                    enemy.type = {
+                                        ...enemy.type,
+                                        color: "yellow"
+                                    };
+                                }
+                                break;
+
+                            case RusherPhase.TARGETING:
+                                // Visual feedback for targeting phase
+                                const targetingProgress = enemy.phaseStartTime ? (currentTime - enemy.phaseStartTime) / enemy.type.targetingDuration! : 0;
+                                const pulseIntensity = Math.abs(Math.sin(targetingProgress * Math.PI * 2));
+                                enemy.type = {
+                                    ...enemy.type,
+                                    color: `rgb(255, ${Math.floor(pulseIntensity * 255)}, 0)`
+                                };
+
+                                // Update target direction continuously during targeting phase
+                                const dx = playerRef.current.position.x - enemy.position.x;
+                                const dy = playerRef.current.position.y - enemy.position.y;
+                                const distance = Math.sqrt(dx * dx + dy * dy);
+                                enemy.targetDirection = {
+                                    x: dx / distance,
+                                    y: dy / distance
+                                };
+
+                                // Check if targeting duration is over
+                                if (typeof enemy.phaseStartTime === 'number' && currentTime - enemy.phaseStartTime >= enemy.type.targetingDuration!) {
+                                    enemy.rusherPhase = RusherPhase.RUSHING;
+                                    enemy.type = {
+                                        ...enemy.type,
+                                        color: "red"
+                                    };
+                                }
+                                break;
+
+                            case RusherPhase.RUSHING:
+                                if (enemy.targetDirection && !hitBoundary) {
+                                    const newX = enemy.position.x + enemy.targetDirection.x * enemy.type.speed;
+                                    const newY = enemy.position.y + enemy.targetDirection.y * enemy.type.speed;
+                                    // Pass false to disable enemy collision checks for rushers
+                                    moveWithCollisionCheck(enemy, newX, newY, false);
+                                }
+                                break;
+                        }
+                        break;
+                    // Add more case handlers for new behaviors here
                 }
 
                 if (enemy.canAttack && !enemy.isStunned && checkCollision(playerRef.current.position, enemy.position)) {
@@ -243,13 +391,27 @@ export default function Home() {
                         playerRef.current.position.x,
                         playerRef.current.position.y
                     );
-                    enemiesRef.current = [...enemiesRef.current, {
+
+                    // Create new enemy with proper initialization
+                    const newEnemy: Enemy = {
                         position: newEnemyPosition,
                         isStunned: false,
                         lastCollisionTime: 0,
-                        type: basicEnemy,
-                        canAttack: true
-                    }];
+                        type: {
+                            ...getRandomEnemyType() // Create a new copy of the type
+                        },
+                        canAttack: true,
+                        rusherPhase: undefined,
+                        phaseStartTime: undefined
+                    };
+
+                    // Initialize phase for rusher
+                    if (newEnemy.type.behavior === EnemyBehavior.RUSH_STRAIGHT) {
+                        newEnemy.rusherPhase = RusherPhase.TARGETING;
+                        newEnemy.phaseStartTime = Date.now();
+                    }
+
+                    enemiesRef.current = [...enemiesRef.current, newEnemy];
                 }
 
                 pointRef.current = getRandomSpawnPosition(
@@ -260,8 +422,6 @@ export default function Home() {
                 );
             }
 
-            // Draw everything in order
-            // 1. Point (bottom layer)
             ctx.fillStyle = "yellow";
             ctx.fillRect(
                 pointRef.current.x,
@@ -270,7 +430,6 @@ export default function Home() {
                 boxSize
             );
 
-            // 2. Player (middle layer)
             ctx.fillStyle = "white";
             ctx.fillRect(
                 playerRef.current.position.x,
@@ -279,7 +438,6 @@ export default function Home() {
                 boxSize
             );
 
-            // 3. Enemies (top layer)
             enemiesRef.current.forEach(enemy => {
                 ctx.fillStyle = enemy.isStunned ? `rgba(0, 255, 0, 0.5)` : enemy.type.color;
                 ctx.fillRect(
