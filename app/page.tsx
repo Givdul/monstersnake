@@ -6,24 +6,12 @@ interface Position {
     x: number;
     y: number;
 }
+
 // Define possible enemy behaviors
 enum EnemyBehavior {
     FOLLOW_PLAYER, // Basic enemy that follows player
-    RUSH_STRAIGHT,
-    SPINNER// Enemy that locks on and rushes in straight line
+    RUSH_STRAIGHT, // Enemy that locks on and rushes in straight line
     // Extend more behaviors here
-}
-
-enum SpinnerPhase {
-    SCANNING,
-    MOVING
-}
-
-enum SpinnerDirection {
-    NORTH,
-    EAST,
-    SOUTH,
-    WEST
 }
 
 enum RusherPhase {
@@ -38,8 +26,7 @@ interface EnemyType {
     behavior: EnemyBehavior;
     rushDelay?: number;
     targetingDuration?: number;
-    collisionTimer?: number;
-    targetDirection?: { x: number; y: number };  // Add this if missing
+    targetDirection?: { x: number; y: number }; // Add this if missing
 }
 
 interface Enemy {
@@ -51,16 +38,14 @@ interface Enemy {
     canAttack: boolean;
     rusherPhase?: RusherPhase;
     phaseStartTime?: number;
-    spinnerPhase?: SpinnerPhase;
-    spinnerDirection?: SpinnerDirection;
-    collisionEndTime?: number;
     targetDirection?: Position;
-    collidedEntities?: Set<Enemy | Player>;
 }
 
 interface Player {
     position: Position;
 }
+
+
 
 // Define different enemy types
 const enemyTypes = {
@@ -75,16 +60,12 @@ const enemyTypes = {
         behavior: EnemyBehavior.RUSH_STRAIGHT,
         rushDelay: 1500,
         targetingDuration: 2000
-    },
-    spinner: {
-        color: "blue",
-        speed: 5,
-        behavior: EnemyBehavior.SPINNER,
-        collisionTimer: 1
     }
 } as const;
 
 export default function Home() {
+    const immunityDuration = 500; // 500 ms = half a second
+    const lastPlayerHitTime = useRef(0);
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const playerRef = useRef<Player>({
         position: {x: 0, y: 0}
@@ -172,26 +153,18 @@ export default function Home() {
             playerRef.current.position.y
         );
 
-        // Replace this part
-        // Create spinner as the first enemy
+        // Initialize enemies
         enemiesRef.current = [{
             position: enemyStartPosition,
             isStunned: false,
             lastCollisionTime: 0,
             type: {
-                ...enemyTypes.spinner
+                ...enemyTypes.rusher
             },
             canAttack: true,
-            spinnerPhase: SpinnerPhase.SCANNING,
-            spinnerDirection: undefined,
-            collisionEndTime: undefined
+            rusherPhase: RusherPhase.TARGETING,
+            phaseStartTime: Date.now()
         }];
-
-        // Initialize phase for rusher
-        if (enemiesRef.current[0].type.behavior === EnemyBehavior.RUSH_STRAIGHT) {
-            enemiesRef.current[0].rusherPhase = RusherPhase.TARGETING;
-            enemiesRef.current[0].phaseStartTime = Date.now();
-        }
 
         pointRef.current = getRandomSpawnPosition(
             width,
@@ -216,11 +189,10 @@ export default function Home() {
                 Math.abs(pos1.y - pos2.y) < boxSize;
         };
 
-        const moveWithCollisionCheck = (enemy: Enemy, newX: number, newY: number, checkEnemyCollisions: boolean = true) => {
+        const moveWithCollisionCheck = (enemy: Enemy, newX: number, newY: number) => {
             const canvas = canvasRef.current;
             if (!canvas) return;
 
-            // Check wall collisions first
             const wouldHitWall =
                 newX < 0 ||
                 newX + boxSize > canvas.width ||
@@ -228,48 +200,28 @@ export default function Home() {
                 newY + boxSize > canvas.height;
 
             if (wouldHitWall) {
-                if (enemy.type.behavior === EnemyBehavior.SPINNER) {
-                    enemy.spinnerPhase = SpinnerPhase.SCANNING;
-                    return;
+                // Bounce back by 1 pixel from walls
+                if (newX < 0) enemy.position.x = 1;
+                if (newX + boxSize > canvas.width) enemy.position.x = canvas.width - boxSize - 1;
+                if (newY < 0) enemy.position.y = 1;
+                if (newY + boxSize > canvas.height) enemy.position.y = canvas.height - boxSize - 1;
+
+                // Reset rusher enemy state when hitting a wall
+                if (enemy.type.behavior === EnemyBehavior.RUSH_STRAIGHT) {
+                    enemy.rusherPhase = RusherPhase.TARGETING;
+                    enemy.phaseStartTime = Date.now();
                 }
-                // For non-spinner enemies, clamp to walls
-                enemy.position.x = Math.max(0, Math.min(canvas.width - boxSize, newX));
-                enemy.position.y = Math.max(0, Math.min(canvas.height - boxSize, newY));
                 return;
             }
 
-            // For spinner, check collisions but always move
-            if (enemy.type.behavior === EnemyBehavior.SPINNER) {
-                // Check if you would collide but don't prevent movement
-                const wouldCollide = checkCollisionWithEnemiesOrPlayer(newX, newY, enemy);
-                if (wouldCollide && !enemy.collisionEndTime) {
-                    enemy.collisionEndTime = Date.now() + enemy.type.collisionTimer!;
-                }
-                // Always move regardless of collision
-                enemy.position.x = newX;
-                enemy.position.y = newY;
-                return;
-            }
-
-            // For other enemies, maintain normal collision checking
-            if (checkEnemyCollisions) {
-                const wouldCollide = checkCollisionWithEnemiesOrPlayer(newX, newY, enemy);
-                if (!wouldCollide) {
-                    enemy.position.x = newX;
-                    enemy.position.y = newY;
-                }
-            } else {
-                enemy.position.x = newX;
-                enemy.position.y = newY;
-            }
+            enemy.position.x = newX;
+            enemy.position.y = newY;
         };
 
         const update = () => {
             if (!canvasRef.current) return;
             const canvas = canvasRef.current;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            const currentTime = Date.now();
 
             if (healthRef.current <= 0) {
                 ctx.fillStyle = "yellow";
@@ -315,7 +267,7 @@ export default function Home() {
 
             enemiesRef.current = enemiesRef.current.filter((enemy): enemy is Enemy => enemy !== undefined).map(enemy => {
                 if (enemy.isStunned) {
-                        if (timeNow - enemy.lastCollisionTime >= stunDuration) {
+                    if (timeNow - enemy.lastCollisionTime >= stunDuration) {
                         enemy.isStunned = false;
                         enemy.canAttack = true;
                     }
@@ -336,217 +288,38 @@ export default function Home() {
                         break;
 
                     case EnemyBehavior.RUSH_STRAIGHT:
-                        // Initialize rusher state if not set
                         if (!enemy.rusherPhase) {
                             enemy.rusherPhase = RusherPhase.TARGETING;
                             enemy.phaseStartTime = timeNow;
                         }
 
-                        // Handle collision with viewport boundaries
-                        const hitBoundary =
-                            enemy.position.x <= 0 ||
-                            enemy.position.x + boxSize >= canvas.width ||
-                            enemy.position.y <= 0 ||
-                            enemy.position.y + boxSize >= canvas.height;
-
-                        if (hitBoundary && enemy.rusherPhase === RusherPhase.RUSHING) {
-                            // Bounce back from the wall slightly
-                            if (enemy.position.x <= 0) {
-                                enemy.position.x = boxSize/2;
-                            } else if (enemy.position.x + boxSize >= canvas.width) {
-                                enemy.position.x = canvas.width - boxSize * 1.5;
-                            }
-                            if (enemy.position.y <= 0) {
-                                enemy.position.y = boxSize/2;
-                            } else if (enemy.position.y + boxSize >= canvas.height) {
-                                enemy.position.y = canvas.height - boxSize * 1.5;
-                            }
-
-                            enemy.rusherPhase = RusherPhase.STUNNED;
-                            enemy.phaseStartTime = timeNow;
-                            enemy.targetDirection = undefined;
-                            enemy.type = {
-                                ...enemy.type,
-                                color: "gray"
+                        if (enemy.rusherPhase === RusherPhase.TARGETING) {
+                            const dx = playerRef.current.position.x - enemy.position.x;
+                            const dy = playerRef.current.position.y - enemy.position.y;
+                            const distance = Math.sqrt(dx * dx + dy * dy);
+                            enemy.targetDirection = {
+                                x: dx / distance,
+                                y: dy / distance
                             };
-                        }
 
-                        // State machine for rusher phases
-                        switch (enemy.rusherPhase) {
-                            case RusherPhase.STUNNED:
-                                // Only check for stun duration
-                                if (typeof enemy.phaseStartTime === 'number' && timeNow - enemy.phaseStartTime >= enemy.type.rushDelay!) {
-                                    enemy.rusherPhase = RusherPhase.TARGETING;
-                                    enemy.phaseStartTime = timeNow;
-                                    enemy.type = {
-                                        ...enemy.type,
-                                        color: "yellow"
-                                    };
-                                }
-                                break;
-
-                            case RusherPhase.TARGETING:
-                                // Visual feedback for targeting phase
-                                const targetingProgress = enemy.phaseStartTime ? (timeNow - enemy.phaseStartTime) / enemy.type.targetingDuration! : 0;
-                                const pulseIntensity = Math.abs(Math.sin(targetingProgress * Math.PI * 2));
-                                enemy.type = {
-                                    ...enemy.type,
-                                    color: `rgb(255, ${Math.floor(pulseIntensity * 255)}, 0)`
-                                };
-
-                                // Update target direction continuously during targeting phase
-                                const dx = playerRef.current.position.x - enemy.position.x;
-                                const dy = playerRef.current.position.y - enemy.position.y;
-                                const distance = Math.sqrt(dx * dx + dy * dy);
-                                enemy.targetDirection = {
-                                    x: dx / distance,
-                                    y: dy / distance
-                                };
-
-                                // Check if targeting duration is over
-                                if (typeof enemy.phaseStartTime === 'number' && timeNow - enemy.phaseStartTime >= enemy.type.targetingDuration!) {
-                                    enemy.rusherPhase = RusherPhase.RUSHING;
-                                    enemy.type = {
-                                        ...enemy.type,
-                                        color: "red"
-                                    };
-                                }
-                                break;
-
-                            case RusherPhase.RUSHING:
-                                if (enemy.targetDirection && !hitBoundary) {
-                                    const newX = enemy.position.x + enemy.targetDirection.x * enemy.type.speed;
-                                    const newY = enemy.position.y + enemy.targetDirection.y * enemy.type.speed;
-                                    // Pass false to disable enemy collision checks for rushers
-                                    moveWithCollisionCheck(enemy, newX, newY, false);
-                                }
-                                break;
-                        }
-                        break;
-
-                    case EnemyBehavior.SPINNER:
-                        if (enemy.collisionEndTime && currentTime >= enemy.collisionEndTime) {
-                            enemy.collisionEndTime = undefined;
-                            enemy.collidedEntities?.clear(); // Clear the set of collided entities
-                            enemy.canAttack = true; // Reset attack capability
-                        }
-
-                        if (enemy.isStunned) {
-                            // Reset movement when stunned
-                            enemy.spinnerPhase = SpinnerPhase.SCANNING;
-                            enemy.spinnerDirection = undefined;
-                            break;
-                        }
-
-                        if (!enemy.spinnerPhase) {
-                            enemy.spinnerPhase = SpinnerPhase.SCANNING;
-                        }
-
-                        // Handle collision timer
-                        if (enemy.collisionEndTime && currentTime < enemy.collisionEndTime) {
-                            // Continue moving in the current direction at half-speed
-                            if (enemy.spinnerDirection !== undefined) {
-                                const moveVector = getDirectionVector(enemy.spinnerDirection);
-                                const newX = enemy.position.x + moveVector.x * (enemy.type.speed / 2);
-                                const newY = enemy.position.y + moveVector.y * (enemy.type.speed / 2);
-                                moveWithCollisionCheck(enemy, newX, newY, true);
+                            if (enemy.phaseStartTime && timeNow - enemy.phaseStartTime >= enemy.type.targetingDuration!) {
+                                enemy.rusherPhase = RusherPhase.RUSHING;
+                                enemy.phaseStartTime = timeNow;
                             }
-                            enemy.type = { ...enemy.type, color: "purple" };
-                            break;
-                        }
-
-                        switch (enemy.spinnerPhase) {
-                            case SpinnerPhase.SCANNING:
-                                enemy.type = { ...enemy.type, color: "blue" };
-                                enemy.spinnerDirection = undefined;
-                                // Clear the collided entities when entering scanning phase
-                                enemy.collidedEntities?.clear();
-
-                                // Check all four directions
-                                for (const direction of [
-                                    SpinnerDirection.NORTH,
-                                    SpinnerDirection.EAST,
-                                    SpinnerDirection.SOUTH,
-                                    SpinnerDirection.WEST
-                                ]) {
-                                    if (checkLineOfSight(enemy.position, playerRef.current.position, direction)) {
-                                        enemy.spinnerDirection = direction;
-                                        enemy.spinnerPhase = SpinnerPhase.MOVING;
-                                        enemy.type = { ...enemy.type, color: "purple" };
-                                        break;
-                                    }
-                                }
-                                break;
-
-                            case SpinnerPhase.MOVING:
-                                if (enemy.spinnerDirection !== undefined) {
-                                    const moveVector = getDirectionVector(enemy.spinnerDirection);
-                                    const newX = enemy.position.x + moveVector.x * enemy.type.speed;
-                                    const newY = enemy.position.y + moveVector.y * enemy.type.speed;
-
-                                    // Check wall collision
-                                    const hitWall =
-                                        newX <= 0 ||
-                                        newX + boxSize >= canvas.width ||
-                                        newY <= 0 ||
-                                        newY + boxSize >= canvas.height;
-
-                                    if (hitWall) {
-                                        enemy.spinnerPhase = SpinnerPhase.SCANNING;
-                                        break;
-                                    }
-
-                                    // Check other collisions
-                                    const wouldCollide = checkCollisionWithEnemiesOrPlayer(newX, newY, enemy);
-                                    if (wouldCollide) {
-                                        enemy.collisionEndTime = currentTime + enemy.type.collisionTimer!;
-                                    }
-
-                                    moveWithCollisionCheck(enemy, newX, newY, true);
-                                }
-                                break;
+                        } else if (enemy.rusherPhase === RusherPhase.RUSHING && enemy.targetDirection) {
+                            const newX = enemy.position.x + enemy.targetDirection.x * enemy.type.speed;
+                            const newY = enemy.position.y + enemy.targetDirection.y * enemy.type.speed;
+                            moveWithCollisionCheck(enemy, newX, newY);
                         }
                         break;
-                    // Add more case handlers for new behaviors here
                 }
 
-                const SPINNER_ATTACK_DELAY = 500; // 500 ms between attacks, adjust as needed
-
-                if (enemy.canAttack && !enemy.isStunned && checkCollision(playerRef.current.position, enemy.position)) {
-
-                    switch (enemy.type.behavior) {
-                        case EnemyBehavior.SPINNER:
-                            // Check if enough time has passed since the last attack AND
-                            // hasn't damaged this entity in current movement phase
-                            if ((!enemy.lastAttackTime || currentTime - enemy.lastAttackTime >= SPINNER_ATTACK_DELAY) &&
-                                (!enemy.collidedEntities?.has(playerRef.current))) {
-
-                                setHealth(prev => Math.max(0, prev - 1));
-                                enemy.lastAttackTime = currentTime;
-
-                                if (!enemy.collisionEndTime) {
-                                    enemy.collisionEndTime = currentTime + enemy.type.collisionTimer!;
-                                    enemy.collidedEntities = new Set([playerRef.current]);
-                                } else {
-                                    // Add to existing set if already in collision state
-                                    enemy.collidedEntities?.add(playerRef.current);
-                                }
-                                enemy.canAttack = false;
-                            }
-                            break;
-
-                        case EnemyBehavior.RUSH_STRAIGHT:
-                            setHealth(prev => Math.max(0, prev - 1));
-                            enemy.canAttack = false;
-                            enemy.lastCollisionTime = Date.now();
-                            break;
-
-                        default:
-                            setHealth(prev => Math.max(0, prev - 1));
-                            enemy.isStunned = true;
-                            enemy.canAttack = false;
-                            enemy.lastCollisionTime = Date.now();
-                            break;
+                if (!enemy.isStunned && checkCollision(playerRef.current.position, enemy.position)) {
+                    const currentTime = Date.now();
+                    if (currentTime - lastPlayerHitTime.current >= immunityDuration) {
+                        setHealth(prev => Math.max(0, prev - 1));
+                        lastPlayerHitTime.current = currentTime;
+                        enemy.isStunned = true;
                     }
                 }
 
@@ -565,26 +338,18 @@ export default function Home() {
                         playerRef.current.position.y
                     );
 
-                    // Create new enemy with proper initialization
                     const newEnemy: Enemy = {
                         position: newEnemyPosition,
                         isStunned: false,
                         lastCollisionTime: 0,
                         type: {
-                            ...getRandomEnemyType() // Create a new copy of the type
+                            ...getRandomEnemyType()
                         },
                         canAttack: true,
                         rusherPhase: undefined,
                         phaseStartTime: undefined
                     };
 
-                    if (newEnemy.type.behavior === EnemyBehavior.SPINNER) {
-                        newEnemy.spinnerPhase = SpinnerPhase.SCANNING;
-                        newEnemy.spinnerDirection = SpinnerDirection.NORTH;
-                        newEnemy.collidedEntities = new Set(); // Initialize here for spinner enemies
-                    }
-
-                    // Initialize phase for rusher
                     if (newEnemy.type.behavior === EnemyBehavior.RUSH_STRAIGHT) {
                         newEnemy.rusherPhase = RusherPhase.TARGETING;
                         newEnemy.phaseStartTime = Date.now();
@@ -638,69 +403,6 @@ export default function Home() {
             }
         };
     }, [canvasSize, points]);
-
-    const getDirectionVector = (direction: SpinnerDirection): { x: number, y: number } => {
-        switch (direction) {
-            case SpinnerDirection.NORTH: return { x: 0, y: -1 };
-            case SpinnerDirection.EAST: return { x: 1, y: 0 };
-            case SpinnerDirection.SOUTH: return { x: 0, y: 1 };
-            case SpinnerDirection.WEST: return { x: -1, y: 0 };
-        }
-    };
-
-    const checkLineOfSight = (
-        enemyPos: Position,
-        playerPos: Position,
-        direction: SpinnerDirection
-    ): boolean => {
-        const tolerance = 10;
-        switch (direction) {
-            case SpinnerDirection.NORTH:
-            case SpinnerDirection.SOUTH:
-                return Math.abs(enemyPos.x - playerPos.x) < tolerance &&
-                    ((direction === SpinnerDirection.NORTH && playerPos.y < enemyPos.y) ||
-                        (direction === SpinnerDirection.SOUTH && playerPos.y > enemyPos.y));
-            case SpinnerDirection.EAST:
-            case SpinnerDirection.WEST:
-                return Math.abs(enemyPos.y - playerPos.y) < tolerance &&
-                    ((direction === SpinnerDirection.EAST && playerPos.x > enemyPos.x) ||
-                        (direction === SpinnerDirection.WEST && playerPos.x < enemyPos.x));
-        }
-    };
-
-    const checkCollisionWithEnemiesOrPlayer = (newX: number, newY: number, currentEnemy: Enemy): boolean => {
-        if (!currentEnemy.collidedEntities) {
-            currentEnemy.collidedEntities = new Set();
-        }
-
-        // Check collision with player
-        const dxPlayer = newX - playerRef.current.position.x;
-        const dyPlayer = newY - playerRef.current.position.y;
-        if (Math.sqrt(dxPlayer * dxPlayer + dyPlayer * dyPlayer) < boxSize) {
-            if (currentEnemy.type.behavior === EnemyBehavior.SPINNER &&
-                !currentEnemy.collidedEntities.has(playerRef.current)) {
-                currentEnemy.collidedEntities.add(playerRef.current);
-                currentEnemy.collisionEndTime = Date.now() + currentEnemy.type.collisionTimer!;
-            }
-            return true;
-        }
-
-        // Check collision with other enemies
-        return enemiesRef.current.some(enemy => {
-            if (enemy === currentEnemy) return false;
-            const dx = newX - enemy.position.x;
-            const dy = newY - enemy.position.y;
-            const collides = Math.sqrt(dx * dx + dy * dy) < boxSize;
-
-            if (collides &&
-                currentEnemy.type.behavior === EnemyBehavior.SPINNER &&
-                !currentEnemy.collidedEntities!.has(enemy)) {
-                currentEnemy.collidedEntities!.add(enemy);
-                currentEnemy.collisionEndTime = Date.now() + currentEnemy.type.collisionTimer!;
-            }
-            return collides;
-        });
-    };
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
