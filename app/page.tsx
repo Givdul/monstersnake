@@ -200,13 +200,11 @@ export default function Home() {
                 newY + boxSize > canvas.height;
 
             if (wouldHitWall) {
-                // Bounce back by 1 pixel from walls
                 if (newX < 0) enemy.position.x = 1;
                 if (newX + boxSize > canvas.width) enemy.position.x = canvas.width - boxSize - 1;
                 if (newY < 0) enemy.position.y = 1;
                 if (newY + boxSize > canvas.height) enemy.position.y = canvas.height - boxSize - 1;
 
-                // Reset rusher enemy state when hitting a wall
                 if (enemy.type.behavior === EnemyBehavior.RUSH_STRAIGHT) {
                     enemy.rusherPhase = RusherPhase.TARGETING;
                     enemy.phaseStartTime = Date.now();
@@ -214,8 +212,25 @@ export default function Home() {
                 return;
             }
 
-            enemy.position.x = newX;
-            enemy.position.y = newY;
+            // Only check collisions for basic enemies
+            if (enemy.type.behavior === EnemyBehavior.FOLLOW_PLAYER) {
+                const wouldCollideWithEnemy = enemiesRef.current.some(otherEnemy => {
+                    if (otherEnemy === enemy) return false;
+                    // Only consider collision with other basic enemies
+                    if (otherEnemy.type.behavior !== EnemyBehavior.FOLLOW_PLAYER) return false;
+                    return Math.abs(newX - otherEnemy.position.x) < boxSize &&
+                        Math.abs(newY - otherEnemy.position.y) < boxSize;
+                });
+
+                if (!wouldCollideWithEnemy) {
+                    enemy.position.x = newX;
+                    enemy.position.y = newY;
+                }
+            } else {
+                // Rushers move freely without collision checks
+                enemy.position.x = newX;
+                enemy.position.y = newY;
+            }
         };
 
         const update = () => {
