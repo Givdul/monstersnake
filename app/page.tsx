@@ -227,7 +227,6 @@ export default function Home() {
                     enemy.position.y = newY;
                 }
             } else {
-                // Rushers move freely without collision checks
                 enemy.position.x = newX;
                 enemy.position.y = newY;
             }
