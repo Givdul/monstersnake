@@ -159,7 +159,7 @@ export default function Home() {
             isStunned: false,
             lastCollisionTime: 0,
             type: {
-                ...enemyTypes.rusher
+                ...enemyTypes.basic
             },
             canAttack: true,
             rusherPhase: RusherPhase.TARGETING,
